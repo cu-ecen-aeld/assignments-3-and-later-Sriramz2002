@@ -28,11 +28,11 @@ MATCHSTR="The number of files are ${NUMFILES} and the number of matching lines a
 
 # Clean previous build artifacts
 echo "Cleaning previous build artifacts"
-make clean
+#make clean
 
 # Compile the writer application using native compilation
 echo "Compiling writer application"
-make
+#make
 if [ $? -ne 0 ]; then
     echo "Failed to compile writer application"
     exit 1
