@@ -5,14 +5,14 @@
 set -e
 set -u
 
-<<<<<<< HEAD
+
 # Define Output Directory
 OUTDIR="${HOME}/lk"
 KERNEL_REPO=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
-=======
+
 OUTDIR=/tmp/aeld
 KERNEL_REPO=git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
->>>>>>> assignments-base/assignment3-part-2
+
 KERNEL_VERSION=v5.15.163
 BUSYBOX_VERSION=1_33_1
 FINDER_APP_DIR=$(realpath $(dirname $0))
@@ -58,14 +58,22 @@ if [ ! -e "${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image" ]; then
     echo "Building Kernel................................................"
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} mrproper
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
+    
+    #-j is for parallel processing : taken from chatgpt
     make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all
-    make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules
+    make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules 
     make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} dtbs
     cp arch/${ARCH}/boot/Image ${OUTDIR}/
     cp -r arch/${ARCH}/boot/dts/ ${OUTDIR}/
 fi
 
 echo "Kernel Image and Device Tree copied successfully"
+
+
+
+
+
+
 
 ### Create Root Filesystem ###
 echo "Setting up root filesystem........................"
@@ -98,7 +106,14 @@ fi
 
 echo "BusyBox installed successfully."
 
-### Set Permissions ###
+
+
+
+
+
+
+
+### Set Permissions: taken from stackoverflow ###
 sudo chmod u+s ${OUTDIR}/rootfs/bin/busybox
 
 ### Copy Library Dependencies ###
@@ -114,17 +129,24 @@ sudo cp -a ${SYSROOT}/lib64/libm.so.6 ${OUTDIR}/rootfs/lib64/ || echo "Warning: 
 sudo cp -a ${SYSROOT}/lib64/libresolv.so.2 ${OUTDIR}/rootfs/lib64/ || echo "Warning: libresolv.so.2 missing!"
 sudo cp -a ${SYSROOT}/lib64/libdl.so.2 ${OUTDIR}/rootfs/lib64/ || echo "Warning: libdl.so.2 missing!"
 
+
+
+
 ### Create Device Nodes ###
 sudo mknod -m 666 ${OUTDIR}/rootfs/dev/null c 1 3
 sudo mknod -m 600 ${OUTDIR}/rootfs/dev/console c 5 1
 
-### Build Finder App (Writer Utility) ###
+### copy and make finder-test.sh ###
 cd ${FINDER_APP_DIR}
 make clean
 make CROSS_COMPILE=${CROSS_COMPILE}
 cp writer ${OUTDIR}/rootfs/home/
 
-### Copy Finder App Scripts ###
+
+
+
+
+##Copy Finder App Scripts #
 cp ${FINDER_APP_DIR}/finder.sh ${OUTDIR}/rootfs/home/
 cp ${FINDER_APP_DIR}/finder-test.sh ${OUTDIR}/rootfs/home/
 cp ${FINDER_APP_DIR}/writer ${OUTDIR}/rootfs/home/
