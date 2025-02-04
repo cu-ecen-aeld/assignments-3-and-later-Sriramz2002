@@ -1,28 +1,19 @@
+CC = aarch64-none-linux-gnu-gcc  # Use ARM64 cross-compiler
 
-CC=$(CROSS_COMPILE)gcc
+CFLAGS = -Wall -Wextra -g
+TARGET = writer
 
-CFLAG=-Wall -Wextra -g
-TARGET=writer
+SRCS = writer.c
+OBJS = $(SRCS:.c=.o)
 
-SRCS=writer.c
-
-OBJS=$(SRCS:.c=.o)
-
-#Default target
-
-.PHONY: default
-default: $(TARGET)
-
-# Bild the target
+.PHONY: all
+all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(CFLAG) -o $(TARGET) $(OBJS)
+	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS)
 
-# Compile .c files to .o files
 %.o: %.c
-	$(CC) $(CFLAG) -c $< -o $@
-
-# Clean up
+	$(CC) $(CFLAGS) -c $< -o $@
 
 .PHONY: clean
 clean:

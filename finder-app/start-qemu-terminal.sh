@@ -7,7 +7,8 @@ set -e
 OUTDIR=$1
 
 if [ -z "${OUTDIR}" ]; then
-    OUTDIR=/tmp/aeld
+OUTDIR=${1:-"${HOME}/lk"}
+
     echo "No outdir specified, using ${OUTDIR}"
 fi
 
