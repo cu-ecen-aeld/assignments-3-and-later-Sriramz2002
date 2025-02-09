@@ -1,3 +1,6 @@
+#ifndef THREADING_H
+#define THREADING_H
+
 #include <stdbool.h>
 #include <pthread.h>
 
@@ -7,7 +10,14 @@
  * It should be returned by your thread so it can be freed by
  * the joiner thread.
  */
-struct thread_data{
+ typedef struct thread_data {
+    pthread_mutex_t *mutex;
+    int wait_to_obtain_ms;
+    int wait_to_release_ms;
+    bool thread_complete_success;
+} thread_data_t;
+
+//
     /*
      * TODO: add other values your thread will need to manage
      * into this structure, use this structure to communicate
@@ -19,10 +29,7 @@ struct thread_data{
      * Set to true if the thread completed with success, false
      * if an error occurred.
      */
-    bool thread_complete_success;
-};
-
-
+//
 /**
 * Start a thread which sleeps @param wait_to_obtain_ms number of milliseconds, then obtains the
 * mutex in @param mutex, then holds for @param wait_to_release_ms milliseconds, then releases.
@@ -37,4 +44,12 @@ struct thread_data{
 * coresponding to the thread which was started.
 * @return true if the thread could be started, false if a failure occurred.
 */
+thread_data_t* create_thread_data(pthread_mutex_t *mutex, int wait_to_obtain_ms, int wait_to_release_ms);
+
+void* threadfunc(void* thread_param);
+
+
 bool start_thread_obtaining_mutex(pthread_t *thread, pthread_mutex_t *mutex,int wait_to_obtain_ms, int wait_to_release_ms);
+
+#endif // THREADING_H
+
