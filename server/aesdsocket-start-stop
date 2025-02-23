@@ -1,100 +1,29 @@
 #!/bin/sh
 
+# Startup script for aesdsocket daemon
 
-
-
-DAEMON_PATH="/usr/bin/aesdsocket"
-DAEMON_OPTS="-d"
-NAME="aesdsocket"
-PIDFILE="/var/run/$NAME.pid"  
-
-start() 
-{
-    echo "Starting $NAME..."
-    if [ -f "$PIDFILE" ]; then
-        PID=$(cat "$PIDFILE")
-        if ps -p $PID > /dev/null 2>&1; then
-            echo "$NAME is already running with PID $PID"
-            exit 1
-        else
-            echo "Stale PID file found. Removing..."
-            rm -f "$PIDFILE"
-        fi
-    fi
-
-    # Start aesdsocket directly since it handles its own PID
-    "$DAEMON_PATH" $DAEMON_OPTS &
-
-    # Wait a moment to ensure the daemon has time to write the PID file
-    sleep 1
-
-    # Check if PID file was created
-    if [ -f "$PIDFILE" ]; then
-        echo "$NAME started with PID $(cat $PIDFILE)"
-    else
-        echo "Failed to start $NAME. PID file not created."
-        exit 1
-    fi
-}
-
-stop() {
-    echo "Stopping $NAME..."
-    if [ -f "$PIDFILE" ]; then
-        PID=$(cat "$PIDFILE")
-        if ps -p $PID > /dev/null 2>&1; then
-            kill -SIGTERM "$PID"
-            sleep 1  # Give time for graceful shutdown
-            if ps -p $PID > /dev/null 2>&1; then
-                echo "Force killing $NAME..."
-                kill -9 "$PID"
-            fi
-            echo "$NAME stopped."
-        else
-            echo "No process with PID $PID found. Removing stale PID file."
-        fi
-        rm -f "$PIDFILE"
-    else
-        echo "$NAME is not running."
-    fi
-}
-
-status() {
-    if [ -f "$PIDFILE" ]; then
-        PID=$(cat "$PIDFILE")
-        if ps -p $PID > /dev/null 2>&1; then
-            echo "$NAME is running with PID $PID"
-        else
-            echo "$NAME is not running, but PID file exists"
-        fi
-    else
-        echo "$NAME is not running"
-    fi
-}
-
-restart() 
-{
-    stop
-    start
-}
+NAME=aesdsocket
+EXEC="/usr/bin/aesdsocket" 
+echo $EXEC
+ARGS="-d"
 
 case "$1" in
-    start)
-        start
-        ;;
-    stop)
-        stop
-        ;;
-    status)
-        status
-        ;;
-    restart)
-        restart
-        ;;
-    *)
-        echo "Usage: $0 {start|stop|status|restart}"
-        exit 1
-        ;;
+  start)
+    echo "Starting $NAME"
+    if [ ! -x "$EXEC" ]; then
+      echo "Error: $EXEC not found or not executable"
+      exit 1
+    fi
+    start-stop-daemon -S -n $NAME -a $EXEC -- $ARGS
+    ;;
+  stop)
+    echo "Stopping $NAME"
+    start-stop-daemon -K -n $NAME
+    ;;
+  *)
+    echo "Usage: $0 {start|stop}"
+    exit 1
+    ;;
 esac
 
 exit 0
-
