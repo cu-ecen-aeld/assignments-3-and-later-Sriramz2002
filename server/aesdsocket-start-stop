@@ -3,7 +3,7 @@
 
 
 
-DAEMON_PATH="aesdsocket"
+DAEMON_PATH="/usr/bin/aesdsocket"
 DAEMON_OPTS="-d"
 NAME="aesdsocket"
 PIDFILE="/var/run/$NAME.pid"  
