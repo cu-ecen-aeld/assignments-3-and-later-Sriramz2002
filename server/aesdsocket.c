@@ -67,12 +67,12 @@ void daemonize()
     if (pid < 0) 
     {
         syslog(LOG_ERR, "fork failed: %s", strerror(errno));
-        
         exit(EXIT_FAILURE);
     }
 
     if (pid > 0) 
     {
+        // Parent exits
         exit(EXIT_SUCCESS); 
     }
 
@@ -84,6 +84,7 @@ void daemonize()
         exit(EXIT_FAILURE);
     }
 
+    // Redirect standard files to /dev/null
     freopen("/dev/null", "r", stdin);
     freopen("/dev/null", "w", stdout);
     freopen("/dev/null", "w", stderr);
@@ -91,6 +92,16 @@ void daemonize()
     if (chdir("/") < 0) 
     {
         syslog(LOG_ERR, "failed to change directory: %s", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+
+    FILE *pid_file = fopen("/var/run/aesdsocket.pid", "w");
+    if (pid_file) {
+        fprintf(pid_file, "%d\n", getpid());
+        fclose(pid_file);
+    } else {
+        syslog(LOG_ERR, "failed to write PID file: %s", strerror(errno));
         exit(EXIT_FAILURE);
     }
 }
