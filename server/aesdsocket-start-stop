@@ -1,21 +1,15 @@
 #!/bin/sh
 
-### BEGIN INIT INFO
-# Provides:          aesdsocket
-# Required-Start:    $remote_fs $syslog
-# Required-Stop:     $remote_fs $syslog
-# Default-Start:     2 3 4 5
-# Default-Stop:      0 1 6
-# Short-Description: Start/stop aesdsocket daemon
-### END INIT INFO
 
-# Set the path to your aesdsocket binary
-DAEMON_PATH="/home/ubuntu_gui/a6/assignments-3-and-later-Sriramz2002/server/aesdsocket"
+
+
+DAEMON_PATH="aesdsocket"
 DAEMON_OPTS="-d"
 NAME="aesdsocket"
-PIDFILE="/var/run/$NAME.pid"  # Same PID file that aesdsocket creates
+PIDFILE="/var/run/$NAME.pid"  
 
-start() {
+start() 
+{
     echo "Starting $NAME..."
     if [ -f "$PIDFILE" ]; then
         PID=$(cat "$PIDFILE")
@@ -77,7 +71,8 @@ status() {
     fi
 }
 
-restart() {
+restart() 
+{
     stop
     start
 }
