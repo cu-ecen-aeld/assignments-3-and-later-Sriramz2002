@@ -1,6 +1,6 @@
-CC = aarch64-none-linux-gnu-gcc  # Use ARM64 cross-compiler
+CC = gcc 
 
-CFLAGS = -Wall -Wextra -g
+CFLAGS = -Wall -Wextra -g -pthread
 TARGET = aesdsocket
 
 SRCS = aesdsocket.c
@@ -9,8 +9,9 @@ OBJS = $(SRCS:.c=.o)
 .PHONY: all
 all: $(TARGET)
 
+LDFLAGS = -pthread
 $(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $(TARGET) $(OBJS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -18,3 +19,4 @@ $(TARGET): $(OBJS)
 .PHONY: clean
 clean:
 	rm -f $(TARGET) $(OBJS)
+
