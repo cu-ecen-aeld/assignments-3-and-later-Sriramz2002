@@ -1,6 +1,6 @@
 CC ?= $(CROSS_COMPILE)gcc
 
-CFLAGS ?= -Wall -Wextra -g -pthread
+CFLAGS ?= -Wall -Wextra -g
 
 LDFLAGS ?= -lpthread -lrt
 
