@@ -1,4 +1,13 @@
-
+/*******************************************************************************
+ * aesdsocket.c
+ *
+ * A multithreaded socket server using pthreads and a global mutex for
+ * file I/O synchronization. Also includes a periodic timer thread that
+ * writes timestamps every 10 seconds.
+ *
+ * Illustrates safer handling of signals: the signal handler only sets
+ * a global volatile flag. All real cleanup happens outside the handler.
+ ******************************************************************************/
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -383,4 +392,5 @@ int main(int argc, char *argv[])
 
     return 0;
 }
+
 
