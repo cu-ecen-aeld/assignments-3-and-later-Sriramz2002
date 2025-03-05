@@ -19,21 +19,22 @@
 #define PORT (9000)
 #define DATAFILE "/var/tmp/aesdsocketdata"
 
+// Global exit flag set by signals.
 static volatile sig_atomic_t g_exit_flag = 0;
 
-// Mutex to protect file I/O to DATAFILE
+// Mutex to protect file I/O operations.
 static pthread_mutex_t g_file_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+// Timer thread for periodic timestamp insertion.
 static pthread_t g_timer_thread;
 
+// Global structure holds the listen file descriptor.
 typedef struct {
     int listen_fd;
-    FILE *data_fp;      // File pointer for DATAFILE
 } global_resources_t;
 
 static global_resources_t g_resources = {
-    .listen_fd = -1,
-    .data_fp   = NULL
+    .listen_fd = -1
 };
 
 typedef struct client_thread_s {
@@ -56,6 +57,7 @@ static void signal_handler(int signo)
     }
 }
 
+// Timestamp thread: every 10 seconds, open file in append mode, write timestamp, flush & fsync, then close.
 static void* timestamp_thread_func(void *arg)
 {
     (void)arg;
@@ -63,7 +65,8 @@ static void* timestamp_thread_func(void *arg)
         for (int i = 0; i < 10 && !g_exit_flag; i++) {
             sleep(1);
         }
-        if (g_exit_flag) break;
+        if (g_exit_flag)
+            break;
 
         time_t now = time(NULL);
         struct tm t;
@@ -74,16 +77,21 @@ static void* timestamp_thread_func(void *arg)
                  "timestamp:%a, %d %b %Y %T %z\n", &t);
 
         pthread_mutex_lock(&g_file_mutex);
-        // Ensure we write at the end of file
-        fseek(g_resources.data_fp, 0, SEEK_END);
-        fwrite(timestamp_str, 1, strlen(timestamp_str), g_resources.data_fp);
-        fflush(g_resources.data_fp);
-        fsync(fileno(g_resources.data_fp));
+        FILE *fp = fopen(DATAFILE, "a");
+        if (fp) {
+            fwrite(timestamp_str, 1, strlen(timestamp_str), fp);
+            fflush(fp);
+            fsync(fileno(fp));
+            fclose(fp);
+        } else {
+            syslog(LOG_ERR, "Failed to open %s in timestamp thread: %s", DATAFILE, strerror(errno));
+        }
         pthread_mutex_unlock(&g_file_mutex);
     }
     pthread_exit(NULL);
 }
 
+// Client thread: receive data, open file in "a+" mode to append and then read entire content.
 static void* client_thread_func(void *arg)
 {
     client_thread_t *client_info = (client_thread_t*)arg;
@@ -102,6 +110,7 @@ static void* client_thread_func(void *arg)
     size_t total_recv = 0;
     ssize_t rc;
 
+    // Receive until newline is encountered.
     while (!g_exit_flag && (rc = recv(client_info->client_fd,
                                       recvbuf + total_recv,
                                       bufsize - total_recv - 1, 0)) > 0) {
@@ -118,6 +127,7 @@ static void* client_thread_func(void *arg)
             recvbuf = tmp;
             bufsize = newsize;
         }
+
         if (memchr(recvbuf, '\n', total_recv)) {
             break;
         }
@@ -126,30 +136,35 @@ static void* client_thread_func(void *arg)
     if (recvbuf && total_recv > 0) {
         pthread_mutex_lock(&g_file_mutex);
 
-        // Move to end and write the received data
-        fseek(g_resources.data_fp, 0, SEEK_END);
-        if (fwrite(recvbuf, 1, total_recv, g_resources.data_fp) != total_recv) {
+        // Open the file in "a+" mode (append and update) so existing data is preserved.
+        FILE *fp = fopen(DATAFILE, "a+");
+        if (!fp) {
+            syslog(LOG_ERR, "Failed to open %s: %s", DATAFILE, strerror(errno));
+            pthread_mutex_unlock(&g_file_mutex);
+            goto done;
+        }
+
+        // Move to end and write received data.
+        fseek(fp, 0, SEEK_END);
+        if (fwrite(recvbuf, 1, total_recv, fp) != total_recv) {
             syslog(LOG_ERR, "Error writing data to file");
         }
-        fflush(g_resources.data_fp);
-        fsync(fileno(g_resources.data_fp));
+        fflush(fp);
+        fsync(fileno(fp));
 
-        // Read from beginning to send back all file data
-        fseek(g_resources.data_fp, 0, SEEK_SET);
-        memset(recvbuf, 0, bufsize);
-        while (fgets(recvbuf, bufsize, g_resources.data_fp) != NULL) {
-            send(client_info->client_fd, recvbuf, strlen(recvbuf), 0);
+        // Now read the entire file to send back.
+        fseek(fp, 0, SEEK_SET);
+        char readbuf[1024];
+        while (fgets(readbuf, sizeof(readbuf), fp) != NULL) {
+            send(client_info->client_fd, readbuf, strlen(readbuf), 0);
         }
-        // Reset pointer for future writes
-        fseek(g_resources.data_fp, 0, SEEK_END);
-
+        fclose(fp);
         pthread_mutex_unlock(&g_file_mutex);
     }
 
 done:
     syslog(LOG_INFO, "Closing connection from %s",
            inet_ntoa(client_info->client_addr.sin_addr));
-
     if (client_info->client_fd >= 0) {
         close(client_info->client_fd);
         client_info->client_fd = -1;
@@ -204,7 +219,6 @@ int main(int argc, char *argv[])
         close(g_resources.listen_fd);
         return EXIT_FAILURE;
     }
-    
     freeaddrinfo(servinfo);
 
     if (daemon_mode) {
@@ -216,7 +230,6 @@ int main(int argc, char *argv[])
         } else if (pid > 0) {
             return EXIT_SUCCESS;
         }
-
         umask(0);
         if (setsid() < 0) {
             syslog(LOG_ERR, "setsid failed: %s", strerror(errno));
@@ -242,19 +255,11 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    // Open the file in append mode so that existing content isn’t lost.
-    g_resources.data_fp = fopen(DATAFILE, "a+");
-    if (!g_resources.data_fp) {
-        syslog(LOG_ERR, "fopen(%s) failed: %s", DATAFILE, strerror(errno));
-        close(g_resources.listen_fd);
-        return EXIT_FAILURE;
-    }
+    syslog(LOG_INFO, "aesdsocket started, listening on port %d", PORT);
 
     if (pthread_create(&g_timer_thread, NULL, timestamp_thread_func, NULL) != 0) {
         syslog(LOG_ERR, "pthread_create for timer thread failed");
     }
-
-    syslog(LOG_INFO, "aesdsocket started, listening on port %d", PORT);
 
     while (!g_exit_flag) {
         struct sockaddr_in clientaddr;
@@ -262,11 +267,11 @@ int main(int argc, char *argv[])
         int client_fd = accept(g_resources.listen_fd,
                                (struct sockaddr*)&clientaddr,
                                &addrlen);
-        if (g_exit_flag) {
+        if (g_exit_flag)
             break;
-        }
         if (client_fd < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR)
+                continue;
             syslog(LOG_ERR, "accept failed: %s", strerror(errno));
             break;
         }
@@ -279,7 +284,6 @@ int main(int argc, char *argv[])
         }
         ct->client_fd = client_fd;
         ct->client_addr = clientaddr;
-
         SLIST_INSERT_HEAD(&g_client_list, ct, entries);
 
         if (pthread_create(&ct->thread_id, NULL, client_thread_func, ct) != 0) {
@@ -310,16 +314,12 @@ int main(int argc, char *argv[])
 
     pthread_join(g_timer_thread, NULL);
 
-    if (g_resources.data_fp) {
-        fclose(g_resources.data_fp);
-        g_resources.data_fp = NULL;
-    }
-
+    // Do not explicitly keep the file open; it is closed in each thread.
+    // Optionally, remove the data file on shutdown.
     remove(DATAFILE);
 
     syslog(LOG_INFO, "aesdsocket clean exit");
     closelog();
-
     return 0;
 }
 
