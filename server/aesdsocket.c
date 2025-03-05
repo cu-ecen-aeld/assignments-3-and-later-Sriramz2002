@@ -54,8 +54,8 @@ static void signal_handler(int signo)
     }
 }
 
-// Timestamp thread: every 10 seconds, open the file in O_APPEND mode,
-// write the timestamp, flush (fsync), then close.
+// Timestamp thread: every 10 seconds, open DATAFILE in append mode, write a timestamp,
+// flush, call fsync(), then close.
 static void* timestamp_thread_func(void *arg)
 {
     (void)arg;
@@ -85,15 +85,13 @@ static void* timestamp_thread_func(void *arg)
     pthread_exit(NULL);
 }
 
-// Client thread: receive data until newline, then
-// lock the mutex, open the file in append mode to write the received data,
-// then open the file for reading and send its contents back.
+// Client thread: receive data until newline, then append it to DATAFILE.
+// Afterwards, open DATAFILE for reading and send its entire contents to the client.
 static void* client_thread_func(void *arg)
 {
     client_thread_t *client_info = (client_thread_t*)arg;
     syslog(LOG_INFO, "Accepted connection from %s",
            inet_ntoa(client_info->client_addr.sin_addr));
-
     size_t bufsize = 1024;
     char *recvbuf = malloc(bufsize);
     if (!recvbuf) {
@@ -122,10 +120,8 @@ static void* client_thread_func(void *arg)
             break;
         }
     }
-
     if (recvbuf && total_recv > 0) {
         pthread_mutex_lock(&g_file_mutex);
-        // Open file for writing in append mode.
         int fd = open(DATAFILE, O_WRONLY | O_APPEND | O_CREAT, 0666);
         if (fd != -1) {
             if (write(fd, recvbuf, total_recv) != total_recv) {
@@ -136,7 +132,6 @@ static void* client_thread_func(void *arg)
         } else {
             syslog(LOG_ERR, "Client thread: open(%s) for writing failed: %s", DATAFILE, strerror(errno));
         }
-        // Now open file for reading and send its contents to the client.
         fd = open(DATAFILE, O_RDONLY);
         if (fd != -1) {
             char readbuf[1024];
@@ -150,7 +145,6 @@ static void* client_thread_func(void *arg)
         }
         pthread_mutex_unlock(&g_file_mutex);
     }
-
 done:
     syslog(LOG_INFO, "Closing connection from %s",
            inet_ntoa(client_info->client_addr.sin_addr));
@@ -169,27 +163,23 @@ int main(int argc, char *argv[])
     int daemon_mode = 0;
     if ((argc == 2) && (strcmp(argv[1], "-d") == 0))
         daemon_mode = 1;
-
     openlog("aesdsocket", LOG_PID, LOG_USER);
-
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signal_handler;
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
-
-    // Set up address info using getaddrinfo.
+    // Use getaddrinfo for protocol-independent binding.
     struct addrinfo hints, *servinfo;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;      // Allow IPv4 or IPv6.
+    hints.ai_family = AF_UNSPEC; // Allow IPv4 or IPv6.
     hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;       // Use my IP.
+    hints.ai_flags = AI_PASSIVE;  // Use local IP.
     int status;
     if ((status = getaddrinfo(NULL, "9000", &hints, &servinfo)) != 0) {
         syslog(LOG_ERR, "getaddrinfo error: %s", gai_strerror(status));
         return EXIT_FAILURE;
     }
-
     g_resources.listen_fd = socket(servinfo->ai_family, servinfo->ai_socktype, servinfo->ai_protocol);
     if (g_resources.listen_fd < 0) {
         syslog(LOG_ERR, "socket() failed: %s", strerror(errno));
@@ -198,7 +188,6 @@ int main(int argc, char *argv[])
     }
     int optval = 1;
     setsockopt(g_resources.listen_fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
-
     if (bind(g_resources.listen_fd, servinfo->ai_addr, servinfo->ai_addrlen) < 0) {
         syslog(LOG_ERR, "bind() failed: %s", strerror(errno));
         freeaddrinfo(servinfo);
@@ -206,7 +195,8 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
     freeaddrinfo(servinfo);
-
+    // *** The critical one-line fix: remove the data file on startup ***
+    remove(DATAFILE);
     if (daemon_mode) {
         pid_t pid = fork();
         if (pid < 0) {
@@ -233,19 +223,15 @@ int main(int argc, char *argv[])
             syslog(LOG_ERR, "could not open /var/run/aesdsocket.pid for writing");
         }
     }
-
     if (listen(g_resources.listen_fd, 10) < 0) {
         syslog(LOG_ERR, "listen() failed: %s", strerror(errno));
         close(g_resources.listen_fd);
         return EXIT_FAILURE;
     }
-
     syslog(LOG_INFO, "aesdsocket started, listening on port %d", PORT);
-
     if (pthread_create(&g_timer_thread, NULL, timestamp_thread_func, NULL) != 0) {
         syslog(LOG_ERR, "pthread_create for timer thread failed");
     }
-
     while (!g_exit_flag) {
         struct sockaddr_in clientaddr;
         socklen_t addrlen = sizeof(clientaddr);
@@ -276,13 +262,11 @@ int main(int argc, char *argv[])
             free(ct);
         }
     }
-
     syslog(LOG_INFO, "shutting down aesdsocket...........................................");
     if (g_resources.listen_fd >= 0) {
         close(g_resources.listen_fd);
         g_resources.listen_fd = -1;
     }
-
     client_thread_t *it = NULL, *tmp = NULL;
     for (it = SLIST_FIRST(&g_client_list); it != NULL; it = tmp) {
         tmp = SLIST_NEXT(it, entries);
@@ -292,12 +276,9 @@ int main(int argc, char *argv[])
             close(it->client_fd);
         free(it);
     }
-
     pthread_join(g_timer_thread, NULL);
-
-    // Optionally, remove the data file on shutdown.
+    // Remove the data file on shutdown.
     remove(DATAFILE);
-
     syslog(LOG_INFO, "aesdsocket clean exit");
     closelog();
     return 0;
