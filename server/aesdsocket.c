@@ -20,8 +20,7 @@
 
 static volatile sig_atomic_t g_exit_flag = 0; 
 
-// Use a file descriptor instead of FILE*
-static int g_file_fd = -1;
+// Mutex for file access synchronization
 static pthread_mutex_t g_file_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_t g_timer_thread; 
@@ -78,11 +77,21 @@ static void* timestamp_thread_func(void *arg)
 
         pthread_mutex_lock(&g_file_mutex);
 
-        // Use lseek and write instead of fseek and fwrite
-        lseek(g_file_fd, 0, SEEK_END);
-        write(g_file_fd, timestamp_str, strlen(timestamp_str));
-        fsync(g_file_fd);  // Ensure data is written to disk
+        // Open file for writing timestamp
+        int fd = open(DATAFILE, O_CREAT | O_WRONLY | O_APPEND, 0666);
+        if (fd < 0) {
+            syslog(LOG_ERR, "Failed to open file for timestamp: %s", strerror(errno));
+            pthread_mutex_unlock(&g_file_mutex);
+            continue;
+        }
 
+        // Write timestamp
+        if (write(fd, timestamp_str, strlen(timestamp_str)) < 0) {
+            syslog(LOG_ERR, "Failed to write timestamp: %s", strerror(errno));
+        }
+        
+        // Close file
+        close(fd);
         pthread_mutex_unlock(&g_file_mutex);
     }
     pthread_exit(NULL);
@@ -135,22 +144,52 @@ static void* client_thread_func(void *arg)
     if (recvbuf && total_recv > 0) {
         pthread_mutex_lock(&g_file_mutex);
 
-        // Use lseek and write for atomic file operations
-        lseek(g_file_fd, 0, SEEK_END);
-        if (write(g_file_fd, recvbuf, total_recv) != total_recv) {
-            syslog(LOG_ERR, "Error writing data to file");
+        // Open file for writing data
+        int write_fd = open(DATAFILE, O_CREAT | O_WRONLY | O_APPEND, 0666);
+        if (write_fd < 0) {
+            syslog(LOG_ERR, "Failed to open file for writing: %s", strerror(errno));
+            pthread_mutex_unlock(&g_file_mutex);
+            goto done;
         }
-        fsync(g_file_fd);  // Ensure data is written to disk
 
-        // Prepare to send back entire file contents
-        lseek(g_file_fd, 0, SEEK_SET);
-        memset(recvbuf, 0, bufsize);
+        // Write received data
+        if (write(write_fd, recvbuf, total_recv) != total_recv) {
+            syslog(LOG_ERR, "Error writing data to file: %s", strerror(errno));
+        }
+        
+        // Ensure data is written to disk
+        fsync(write_fd);
+        
+        // Close write file descriptor
+        close(write_fd);
 
+        // Open file for reading
+        int read_fd = open(DATAFILE, O_RDONLY);
+        if (read_fd < 0) {
+            syslog(LOG_ERR, "Failed to open file for reading: %s", strerror(errno));
+            pthread_mutex_unlock(&g_file_mutex);
+            goto done;
+        }
+
+        // Prepare a separate buffer for reading
+        char *readbuf = malloc(bufsize);
+        if (!readbuf) {
+            syslog(LOG_ERR, "malloc() failed for read buffer");
+            close(read_fd);
+            pthread_mutex_unlock(&g_file_mutex);
+            goto done;
+        }
+
+        // Read and send file contents
         ssize_t bytes_read;
-        while ((bytes_read = read(g_file_fd, recvbuf, bufsize)) > 0) {
-            send(client_info->client_fd, recvbuf, bytes_read, 0);
+        while ((bytes_read = read(read_fd, readbuf, bufsize - 1)) > 0) {
+            readbuf[bytes_read] = '\0';
+            send(client_info->client_fd, readbuf, bytes_read, 0);
         }
 
+        // Clean up read resources
+        free(readbuf);
+        close(read_fd);
         pthread_mutex_unlock(&g_file_mutex);
     }
 
@@ -238,18 +277,9 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    // Open file with explicit file descriptor and truncate it
-    g_file_fd = open(DATAFILE, O_CREAT | O_RDWR | O_TRUNC, 0666);
-    if (g_file_fd < 0) {
-        syslog(LOG_ERR, "open(%s) failed: %s", DATAFILE, strerror(errno));
-        close(g_resources.listen_fd);
-        return EXIT_FAILURE;
-    }
-
     // Create timestamp thread
     if (pthread_create(&g_timer_thread, NULL, timestamp_thread_func, NULL) != 0) {
         syslog(LOG_ERR, "pthread_create for timer thread failed");
-        close(g_file_fd);
         close(g_resources.listen_fd);
         return EXIT_FAILURE;
     }
@@ -317,12 +347,7 @@ int main(int argc, char *argv[])
     // Join timestamp thread
     pthread_join(g_timer_thread, NULL);
 
-    // Close and remove file
-    if (g_file_fd >= 0) {
-        close(g_file_fd);
-        g_file_fd = -1;
-    }
-
+    // Remove data file
     remove(DATAFILE);
 
     syslog(LOG_INFO, "aesdsocket clean exit");
