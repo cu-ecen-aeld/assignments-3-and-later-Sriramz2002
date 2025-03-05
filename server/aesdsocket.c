@@ -16,32 +16,25 @@
 #include <sys/stat.h>
 #include <netdb.h>
 
-
 #define PORT (9000)
 #define DATAFILE "/var/tmp/aesdsocketdata"
 
+static volatile sig_atomic_t g_exit_flag = 0;
 
-static volatile sig_atomic_t g_exit_flag = 0; 
-
-//to protect writes/reads to the /var/tmp/aesdsocketdata file.
+// Mutex to protect file I/O to DATAFILE
 static pthread_mutex_t g_file_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static pthread_t g_timer_thread; 
-
+static pthread_t g_timer_thread;
 
 typedef struct {
     int listen_fd;
-    FILE *data_fp;      ///var/tmp/aesdsocketdata
+    FILE *data_fp;      // File pointer for DATAFILE
 } global_resources_t;
 
 static global_resources_t g_resources = {
     .listen_fd = -1,
     .data_fp   = NULL
 };
-
-
-
-
 
 typedef struct client_thread_s {
     pthread_t thread_id;
@@ -50,59 +43,44 @@ typedef struct client_thread_s {
     SLIST_ENTRY(client_thread_s) entries;
 } client_thread_t;
 
-
 static SLIST_HEAD(client_list_head, client_thread_s) g_client_list =
     SLIST_HEAD_INITIALIZER(g_client_list);
-
 
 static void signal_handler(int signo)
 {
     (void)signo;
-
-    
     g_exit_flag = 1;
-
-
-
-
-  
-    if (g_resources.listen_fd >= 0) 
-    {
+    if (g_resources.listen_fd >= 0) {
         close(g_resources.listen_fd);
         g_resources.listen_fd = -1;
     }
 }
 
-
 static void* timestamp_thread_func(void *arg)
 {
-    (void)arg; 
+    (void)arg;
+    while (!g_exit_flag) {
+        for (int i = 0; i < 10 && !g_exit_flag; i++) {
+            sleep(1);
+        }
+        if (g_exit_flag) break;
 
-while (!g_exit_flag) {
-    for (int i = 0; i < 10 && !g_exit_flag; i++) {
-        sleep(1); 
+        time_t now = time(NULL);
+        struct tm t;
+        localtime_r(&now, &t);
+
+        char timestamp_str[128];
+        strftime(timestamp_str, sizeof(timestamp_str),
+                 "timestamp:%a, %d %b %Y %T %z\n", &t);
+
+        pthread_mutex_lock(&g_file_mutex);
+        // Ensure we write at the end of file
+        fseek(g_resources.data_fp, 0, SEEK_END);
+        fwrite(timestamp_str, 1, strlen(timestamp_str), g_resources.data_fp);
+        fflush(g_resources.data_fp);
+        fsync(fileno(g_resources.data_fp));
+        pthread_mutex_unlock(&g_file_mutex);
     }
-
-    if (g_exit_flag) break;  
-
-
-    time_t now = time(NULL);
-    struct tm t;
-    localtime_r(&now, &t);
-
-    char timestamp_str[128];
-    strftime(timestamp_str, sizeof(timestamp_str),
-             "timestamp:%a, %d %b %Y %T %z\n", &t);
-
-
-    pthread_mutex_lock(&g_file_mutex);
-
-    fseek(g_resources.data_fp, 0, SEEK_END);
-    fwrite(timestamp_str, 1, strlen(timestamp_str), g_resources.data_fp);
-    fflush(g_resources.data_fp);
-
-    pthread_mutex_unlock(&g_file_mutex);
-}
     pthread_exit(NULL);
 }
 
@@ -110,10 +88,8 @@ static void* client_thread_func(void *arg)
 {
     client_thread_t *client_info = (client_thread_t*)arg;
 
-
     syslog(LOG_INFO, "Accepted connection from %s",
            inet_ntoa(client_info->client_addr.sin_addr));
-
 
     size_t bufsize = 1024;
     char *recvbuf = malloc(bufsize);
@@ -126,12 +102,11 @@ static void* client_thread_func(void *arg)
     size_t total_recv = 0;
     ssize_t rc;
 
-
-    while (!g_exit_flag && (rc = recv(client_info->client_fd, recvbuf + total_recv, bufsize - total_recv - 1, 0)) > 0) 
-    {
+    while (!g_exit_flag && (rc = recv(client_info->client_fd,
+                                      recvbuf + total_recv,
+                                      bufsize - total_recv - 1, 0)) > 0) {
         total_recv += rc;
-        recvbuf[total_recv] = '\0'; 
-
+        recvbuf[total_recv] = '\0';
 
         if (total_recv >= bufsize - 1) {
             size_t newsize = bufsize * 2;
@@ -143,45 +118,37 @@ static void* client_thread_func(void *arg)
             recvbuf = tmp;
             bufsize = newsize;
         }
-
-
         if (memchr(recvbuf, '\n', total_recv)) {
             break;
         }
     }
 
-
     if (recvbuf && total_recv > 0) {
-
         pthread_mutex_lock(&g_file_mutex);
 
+        // Move to end and write the received data
         fseek(g_resources.data_fp, 0, SEEK_END);
         if (fwrite(recvbuf, 1, total_recv, g_resources.data_fp) != total_recv) {
             syslog(LOG_ERR, "Error writing data to file");
         }
         fflush(g_resources.data_fp);
+        fsync(fileno(g_resources.data_fp));
 
-
+        // Read from beginning to send back all file data
         fseek(g_resources.data_fp, 0, SEEK_SET);
-
-
         memset(recvbuf, 0, bufsize);
-
         while (fgets(recvbuf, bufsize, g_resources.data_fp) != NULL) {
             send(client_info->client_fd, recvbuf, strlen(recvbuf), 0);
         }
-
-
+        // Reset pointer for future writes
         fseek(g_resources.data_fp, 0, SEEK_END);
 
         pthread_mutex_unlock(&g_file_mutex);
     }
 
 done:
-
     syslog(LOG_INFO, "Closing connection from %s",
            inet_ntoa(client_info->client_addr.sin_addr));
-
 
     if (client_info->client_fd >= 0) {
         close(client_info->client_fd);
@@ -193,7 +160,6 @@ done:
     pthread_exit(NULL);
 }
 
-
 int main(int argc, char *argv[])
 {
     int daemon_mode = 0;
@@ -201,9 +167,7 @@ int main(int argc, char *argv[])
         daemon_mode = 1;
     }
 
-
     openlog("aesdsocket", LOG_PID, LOG_USER);
-
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -211,13 +175,13 @@ int main(int argc, char *argv[])
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    // Use getaddrinfo
+    // Use getaddrinfo for protocol-independent binding.
     struct addrinfo hints, *servinfo;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
+    hints.ai_family = AF_UNSPEC; // IPv4 or IPv6
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
-    
+
     int status;
     if ((status = getaddrinfo(NULL, "9000", &hints, &servinfo)) != 0) {
         syslog(LOG_ERR, "getaddrinfo error: %s", gai_strerror(status));
@@ -250,7 +214,6 @@ int main(int argc, char *argv[])
             close(g_resources.listen_fd);
             return EXIT_FAILURE;
         } else if (pid > 0) {
-
             return EXIT_SUCCESS;
         }
 
@@ -260,13 +223,9 @@ int main(int argc, char *argv[])
             close(g_resources.listen_fd);
             return EXIT_FAILURE;
         }
-
         freopen("/dev/null", "r", stdin);
-        
         freopen("/dev/null", "w", stdout);
-        
         freopen("/dev/null", "w", stderr);
-
 
         FILE *pidfp = fopen("/var/run/aesdsocket.pid", "w");
         if (pidfp) {
@@ -277,50 +236,40 @@ int main(int argc, char *argv[])
         }
     }
 
-    
     if (listen(g_resources.listen_fd, 10) < 0) {
         syslog(LOG_ERR, "listen() failed: %s", strerror(errno));
         close(g_resources.listen_fd);
         return EXIT_FAILURE;
     }
 
-
-    g_resources.data_fp = fopen(DATAFILE, "w+");
+    // Open the file in append mode so that existing content isn’t lost.
+    g_resources.data_fp = fopen(DATAFILE, "a+");
     if (!g_resources.data_fp) {
         syslog(LOG_ERR, "fopen(%s) failed: %s", DATAFILE, strerror(errno));
         close(g_resources.listen_fd);
         return EXIT_FAILURE;
     }
 
-
     if (pthread_create(&g_timer_thread, NULL, timestamp_thread_func, NULL) != 0) {
         syslog(LOG_ERR, "pthread_create for timer thread failed");
-
     }
 
     syslog(LOG_INFO, "aesdsocket started, listening on port %d", PORT);
 
-
     while (!g_exit_flag) {
         struct sockaddr_in clientaddr;
         socklen_t addrlen = sizeof(clientaddr);
-
         int client_fd = accept(g_resources.listen_fd,
                                (struct sockaddr*)&clientaddr,
                                &addrlen);
-        if (g_exit_flag) 
-        {
-
+        if (g_exit_flag) {
             break;
         }
         if (client_fd < 0) {
-
             if (errno == EINTR) continue;
-            
             syslog(LOG_ERR, "accept failed: %s", strerror(errno));
             break;
         }
-
 
         client_thread_t *ct = calloc(1, sizeof(client_thread_t));
         if (!ct) {
@@ -331,59 +280,40 @@ int main(int argc, char *argv[])
         ct->client_fd = client_fd;
         ct->client_addr = clientaddr;
 
-
         SLIST_INSERT_HEAD(&g_client_list, ct, entries);
-
 
         if (pthread_create(&ct->thread_id, NULL, client_thread_func, ct) != 0) {
             syslog(LOG_ERR, "pthread_create for client failed");
-            
             close(client_fd);
-
             SLIST_REMOVE(&g_client_list, ct, client_thread_s, entries);
             free(ct);
         }
     }
 
-
-
-
     syslog(LOG_INFO, "shutting down aesdsocket...........................................");
 
-    if (g_resources.listen_fd >= 0)
-     {
+    if (g_resources.listen_fd >= 0) {
         close(g_resources.listen_fd);
         g_resources.listen_fd = -1;
     }
 
-
     client_thread_t *it = NULL;
     client_thread_t *tmp = NULL;
-
-
-
-    for (it = SLIST_FIRST(&g_client_list); it != NULL; it = tmp) 
-    {
+    for (it = SLIST_FIRST(&g_client_list); it != NULL; it = tmp) {
         tmp = SLIST_NEXT(it, entries);
-
-
         pthread_join(it->thread_id, NULL);
-
-
         SLIST_REMOVE(&g_client_list, it, client_thread_s, entries);
-        if (it->client_fd >= 0) close(it->client_fd);
+        if (it->client_fd >= 0)
+            close(it->client_fd);
         free(it);
     }
 
-
     pthread_join(g_timer_thread, NULL);
-
 
     if (g_resources.data_fp) {
         fclose(g_resources.data_fp);
         g_resources.data_fp = NULL;
     }
-
 
     remove(DATAFILE);
 
@@ -392,3 +322,4 @@ int main(int argc, char *argv[])
 
     return 0;
 }
+
