@@ -11,7 +11,7 @@
 
 # ------------------- Configuration Variables --------------------
 DAEMON_EXEC="aesdsocket"                    # Name of the executable
-DAEMON_PATH="/usr/bin/$DAEMON_EXEC"         # Full path to the executable
+DAEMON_PATH="/usr/bin/aesdsocket"         # Full path to the executable /usr/bin/aesdsocket"    
 DAEMON_ARGS="-d"                            # Arguments passed to the daemon
 DAEMON_NAME="aesdsocket"                    # Name used by start-stop-daemon
 
@@ -90,4 +90,3 @@ case "$1" in
 esac
 
 exit 0
-
