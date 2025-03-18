@@ -17,15 +17,24 @@
 
 #define SERVER_PORT 9000
 #define BACKLOG 10
-#define FILE_PATH "/var/tmp/aesdsocketdata"
 #define BUFFER_SIZE 1024
 
-// Global flag for handling termination
-static volatile sig_atomic_t server_exit_flag = 0; 
-static pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_t timestamp_thread;
+#define USE_AESD_CHAR_DEVICE 1
 
-// Structure to manage client threads
+#if USE_AESD_CHAR_DEVICE
+#define FILE_PATH "/dev/aesdchar"
+#else
+#define FILE_PATH "/var/tmp/aesdsocketdata"
+#endif
+
+// Global exit flag and file mutex
+static volatile sig_atomic_t server_exit_flag = 0;
+static pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+#if !USE_AESD_CHAR_DEVICE
+static pthread_t timestamp_thread;
+#endif
+
 typedef struct client_thread {
     pthread_t thread_id;
     int client_fd;
@@ -33,27 +42,24 @@ typedef struct client_thread {
     SLIST_ENTRY(client_thread) entries;
 } client_thread_t;
 
-// Global SLIST for managing active threads
+// SLIST for active client threads
 static SLIST_HEAD(client_list_head, client_thread) client_list = SLIST_HEAD_INITIALIZER(client_list);
 
-// Global socket descriptor
 int server_socket_fd = -1;
 
-// Signal handler function
+// Signal handler
 void signal_handler(int signo) {
     (void)signo;
     server_exit_flag = 1;
     close(server_socket_fd);
 }
 
-// Function to run a periodic timestamp writer
+// Timestamp writer thread (disabled for aesdchar)
+#if !USE_AESD_CHAR_DEVICE
 void* timestamp_writer(void *arg) {
     (void)arg;
-
     while (!server_exit_flag) {
         sleep(10);
-
-        // Generate timestamp string
         time_t now = time(NULL);
         struct tm time_info;
         char timestamp_str[128];
@@ -61,7 +67,6 @@ void* timestamp_writer(void *arg) {
         localtime_r(&now, &time_info);
         strftime(timestamp_str, sizeof(timestamp_str), "timestamp:%a, %d %b %Y %T %z\n", &time_info);
 
-        // Write to file
         pthread_mutex_lock(&file_mutex);
         int fd = open(FILE_PATH, O_WRONLY | O_APPEND | O_CREAT, 0666);
         if (fd >= 0) {
@@ -74,31 +79,39 @@ void* timestamp_writer(void *arg) {
     }
     return NULL;
 }
+#endif
 
-// Client handler function
+// Client handler
 void* client_handler(void *arg) {
     client_thread_t *client_info = (client_thread_t*)arg;
     int client_fd = client_info->client_fd;
-
     syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(client_info->client_addr.sin_addr));
 
     char *recvbuf = malloc(BUFFER_SIZE);
     if (!recvbuf) {
-        syslog(LOG_ERR, "Failed to allocate memory for client buffer");
+        syslog(LOG_ERR, "Memory allocation failed");
         close(client_fd);
+        free(client_info);
         pthread_exit(NULL);
     }
 
     ssize_t bytes_received;
     size_t total_received = 0;
 
+#if USE_AESD_CHAR_DEVICE
+    pthread_mutex_lock(&file_mutex);
+    int file_fd = open(FILE_PATH, O_RDWR);
+#else
     pthread_mutex_lock(&file_mutex);
     int file_fd = open(FILE_PATH, O_CREAT | O_WRONLY | O_APPEND, 0666);
+#endif
+
     if (file_fd == -1) {
-        syslog(LOG_ERR, "Failed to open file");
+        syslog(LOG_ERR, "File open failed: %s", strerror(errno));
+        pthread_mutex_unlock(&file_mutex);
         close(client_fd);
         free(recvbuf);
-        pthread_mutex_unlock(&file_mutex);
+        free(client_info);
         pthread_exit(NULL);
     }
 
@@ -106,29 +119,30 @@ void* client_handler(void *arg) {
         total_received += bytes_received;
         recvbuf[total_received] = '\0';
 
-        // Resize buffer if needed
         if (total_received >= BUFFER_SIZE - 1) {
             char *new_buf = realloc(recvbuf, total_received * 2);
             if (!new_buf) {
-                syslog(LOG_ERR, "Failed to reallocate buffer");
+                syslog(LOG_ERR, "Buffer reallocation failed");
                 break;
             }
             recvbuf = new_buf;
         }
 
-        // Break if newline received
-        if (strchr(recvbuf, '\n')) {
-            break;
-        }
+        if (strchr(recvbuf, '\n')) break;
     }
 
     if (write(file_fd, recvbuf, total_received) == -1) {
-        syslog(LOG_ERR, "Failed to write to file");
+        syslog(LOG_ERR, "Write failed: %s", strerror(errno));
     }
+
+#if USE_AESD_CHAR_DEVICE
+    lseek(file_fd, 0, SEEK_SET);
+#endif
+
+    // Read and send back file content
     close(file_fd);
     pthread_mutex_unlock(&file_mutex);
 
-    // Send back file contents
     pthread_mutex_lock(&file_mutex);
     file_fd = open(FILE_PATH, O_RDONLY);
     if (file_fd != -1) {
@@ -139,15 +153,15 @@ void* client_handler(void *arg) {
     }
     pthread_mutex_unlock(&file_mutex);
 
-    syslog(LOG_INFO, "Closing connection from %s", inet_ntoa(client_info->client_addr.sin_addr));
+    syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(client_info->client_addr.sin_addr));
 
     close(client_fd);
     free(recvbuf);
-
+    free(client_info);
     pthread_exit(NULL);
 }
 
-// Daemonization function
+// Daemonize process
 void daemonize() {
     pid_t pid = fork();
     if (pid < 0) exit(EXIT_FAILURE);
@@ -176,17 +190,17 @@ int main(int argc, char *argv[]) {
 
     openlog("aesdsocket", LOG_PID, LOG_USER);
 
-    // Setup signal handling
+    // Signal setup
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signal_handler;
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    // Create server socket
+    // Socket setup
     server_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket_fd < 0) {
-        syslog(LOG_ERR, "Socket creation failed: %s", strerror(errno));
+        syslog(LOG_ERR, "Socket failed: %s", strerror(errno));
         return EXIT_FAILURE;
     }
 
@@ -215,26 +229,35 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
+#if !USE_AESD_CHAR_DEVICE
     pthread_create(&timestamp_thread, NULL, timestamp_writer, NULL);
-    syslog(LOG_INFO, "Server listening on port %d", SERVER_PORT);
+#endif
 
+    syslog(LOG_INFO, "Server started on port %d", SERVER_PORT);
+
+    // Accept client connections
     while (!server_exit_flag) {
         struct sockaddr_in client_addr;
         socklen_t addr_len = sizeof(client_addr);
         int client_fd = accept(server_socket_fd, (struct sockaddr*)&client_addr, &addr_len);
-
         if (server_exit_flag) break;
         if (client_fd < 0) continue;
 
-        client_thread_t *client_thread = malloc(sizeof(client_thread_t));
-        client_thread->client_fd = client_fd;
-        client_thread->client_addr = client_addr;
+        client_thread_t *client_info = malloc(sizeof(client_thread_t));
+        client_info->client_fd = client_fd;
+        client_info->client_addr = client_addr;
 
-        pthread_create(&client_thread->thread_id, NULL, client_handler, client_thread);
+        pthread_create(&client_info->thread_id, NULL, client_handler, client_info);
     }
 
     close(server_socket_fd);
+
+#if !USE_AESD_CHAR_DEVICE
+    pthread_cancel(timestamp_thread);
+    pthread_join(timestamp_thread, NULL);
     remove(FILE_PATH);
+#endif
+
     closelog();
     return 0;
 }

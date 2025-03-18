@@ -28,24 +28,18 @@ void aesd_circular_buffer_init(struct aesd_circular_buffer *buffer)
  * @param buffer the buffer to add to
  * @param add_entry a pointer to the data to add
  */
-void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const struct aesd_buffer_entry *add_entry)
+const char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const struct aesd_buffer_entry *add_entry)
 {
+    const char *ret_ptr = NULL; // Pointer to store overwritten buffer
+
     if (buffer == NULL || add_entry == NULL) {
-        return;
+        return ret_ptr;
     }
     
-    // If the buffer is full, we need to free the memory at out_offs before overwriting
+    // If the buffer is full, we need to capture the buffer we are about to overwrite
     if (buffer->full) {
-        // Points to the entry we're about to overwrite
-        struct aesd_buffer_entry *entry_to_overwrite = &buffer->entry[buffer->in_offs];
-        
-        // The buffptr might be freed by the caller in KERNEL mode,
-        // but this pattern is safe in both cases.
-        entry_to_overwrite->buffptr = NULL;
-        entry_to_overwrite->size = 0;
-        
-        // Advance the out_offs since we're overwriting the oldest entry
-        buffer->out_offs = (buffer->out_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+        // Capture the pointer of the entry we are about to overwrite
+        ret_ptr = buffer->entry[buffer->in_offs].buffptr;
     }
     
     // Save the new entry at the current in_offs position
@@ -54,11 +48,19 @@ void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const s
     // Advance the in_offs
     buffer->in_offs = (buffer->in_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
     
+    // If buffer was full, advance out_offs as well
+    if (buffer->full) {
+        buffer->out_offs = (buffer->out_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    }
+    
     // Check if buffer is now full
     if (buffer->in_offs == buffer->out_offs) {
         buffer->full = true;
     }
+
+    return ret_ptr; // Return pointer to overwritten buffer (or NULL if not full yet)
 }
+
 
 /**
  * @param buffer the buffer to find in
