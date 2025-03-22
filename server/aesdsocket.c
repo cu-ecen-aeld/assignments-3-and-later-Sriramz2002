@@ -14,6 +14,8 @@
 #include <time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include "aesd_ioctl.h"
 
 #define SERVER_PORT 9000
 #define BACKLOG 10
@@ -30,7 +32,6 @@
 
 char *seek_cmd = IOCTL_CMD_STR;
 size_t seek_cmd_len = strlen(seek_cmd);
-
 
 // Global exit flag and file mutex
 static volatile sig_atomic_t server_exit_flag = 0;
@@ -58,47 +59,7 @@ void signal_handler(int signo) {
     server_exit_flag = 1;
     close(server_socket_fd);
 }
-if (strncmp(recv_buf, seek_cmd, seek_cmd_len) == 0) 
-{
-    // Detected IOCTL Command
-    unsigned int cmd_idx = 0, cmd_offset = 0;
-    char *x_ptr = recv_buf + seek_cmd_len;
-    char *y_ptr = strchr(x_ptr, ','); // Find comma separator
 
-    if (y_ptr) {
-        *y_ptr = '\0'; // Null terminate X value
-        y_ptr++;       // Move to Y value
-
-        cmd_idx = (unsigned int) strtoul(x_ptr, NULL, 10);
-        cmd_offset = (unsigned int) strtoul(y_ptr, NULL, 10);
-
-        syslog(LOG_INFO, "IOCTL Seek Request: Command=%u Offset=%u", cmd_idx, cmd_offset);
-
-        // Prepare ioctl struct
-        struct aesd_seekto seekto_params;
-        seekto_params.write_cmd = cmd_idx;
-        seekto_params.write_cmd_offset = cmd_offset;
-
-        // Issue ioctl
-        if (ioctl(file_fd, AESDCHAR_IOCSEEKTO, &seekto_params) == -1) {
-            syslog(LOG_ERR, "ioctl AESDCHAR_IOCSEEKTO failed: %s", strerror(errno));
-        }
-
-        // Proceed to read/send, skip writing the command string to driver
-        continue;
-    }
-}
-char read_buf[1024];
-ssize_t read_bytes = 0;
-
-lseek(file_fd, 0, SEEK_CUR); // Ensure position set correctly
-
-while ((read_bytes = read(file_fd, read_buf, sizeof(read_buf))) > 0)
-{
-    send(client_fd, read_buf, read_bytes, 0);
-}
-
-// Timestamp writer thread (disabled for aesdchar)
 #if !USE_AESD_CHAR_DEVICE
 void* timestamp_writer(void *arg) {
     (void)arg;
@@ -141,13 +102,14 @@ void* client_handler(void *arg) {
 
     ssize_t bytes_received;
     size_t total_received = 0;
+    int file_fd;
 
 #if USE_AESD_CHAR_DEVICE
     pthread_mutex_lock(&file_mutex);
-    int file_fd = open(FILE_PATH, O_RDWR);
+    file_fd = open(FILE_PATH, O_RDWR);
 #else
     pthread_mutex_lock(&file_mutex);
-    int file_fd = open(FILE_PATH, O_CREAT | O_WRONLY | O_APPEND, 0666);
+    file_fd = open(FILE_PATH, O_CREAT | O_RDWR | O_APPEND, 0666);
 #endif
 
     if (file_fd == -1) {
@@ -159,6 +121,7 @@ void* client_handler(void *arg) {
         pthread_exit(NULL);
     }
 
+    // Receive full message (until newline)
     while ((bytes_received = recv(client_fd, recvbuf + total_received, BUFFER_SIZE - total_received - 1, 0)) > 0) {
         total_received += bytes_received;
         recvbuf[total_received] = '\0';
@@ -175,26 +138,48 @@ void* client_handler(void *arg) {
         if (strchr(recvbuf, '\n')) break;
     }
 
-    if (write(file_fd, recvbuf, total_received) == -1) {
-        syslog(LOG_ERR, "Write failed: %s", strerror(errno));
-    }
+    if (total_received > 0) {
+        // Check if IOCTL command
+        if (strncmp(recvbuf, seek_cmd, seek_cmd_len) == 0) {
+            // Detected IOCTL Command
+            unsigned int cmd_idx = 0, cmd_offset = 0;
+            char *x_ptr = recvbuf + seek_cmd_len;
+            char *y_ptr = strchr(x_ptr, ',');
 
-#if USE_AESD_CHAR_DEVICE
-    lseek(file_fd, 0, SEEK_SET);
-#endif
+            if (y_ptr) {
+                *y_ptr = '\0';
+                y_ptr++;
+
+                cmd_idx = (unsigned int) strtoul(x_ptr, NULL, 10);
+                cmd_offset = (unsigned int) strtoul(y_ptr, NULL, 10);
+
+                syslog(LOG_INFO, "IOCTL Seek Request: Command=%u Offset=%u", cmd_idx, cmd_offset);
+
+                struct aesd_seekto seekto_params;
+                seekto_params.write_cmd = cmd_idx;
+                seekto_params.write_cmd_offset = cmd_offset;
+
+                if (ioctl(file_fd, AESDCHAR_IOCSEEKTO, &seekto_params) == -1) {
+                    syslog(LOG_ERR, "ioctl AESDCHAR_IOCSEEKTO failed: %s", strerror(errno));
+                }
+            }
+        } else {
+            // Normal write
+            if (write(file_fd, recvbuf, total_received) == -1) {
+                syslog(LOG_ERR, "Write failed: %s", strerror(errno));
+            }
+        }
+    }
 
     // Read and send back file content
-    close(file_fd);
-    pthread_mutex_unlock(&file_mutex);
-
-    pthread_mutex_lock(&file_mutex);
-    file_fd = open(FILE_PATH, O_RDONLY);
-    if (file_fd != -1) {
-        while ((bytes_received = read(file_fd, recvbuf, BUFFER_SIZE)) > 0) {
-            send(client_fd, recvbuf, bytes_received, 0);
-        }
-        close(file_fd);
+    lseek(file_fd, 0, SEEK_SET);
+    char read_buf[BUFFER_SIZE];
+    ssize_t read_bytes;
+    while ((read_bytes = read(file_fd, read_buf, sizeof(read_buf))) > 0) {
+        send(client_fd, read_buf, read_bytes, 0);
     }
+
+    close(file_fd);
     pthread_mutex_unlock(&file_mutex);
 
     syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(client_info->client_addr.sin_addr));
