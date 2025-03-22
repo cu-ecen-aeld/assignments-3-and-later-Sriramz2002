@@ -1,12 +1,15 @@
-CC ?= $(CROSS_COMPILE)gcc
+# Force AArch64 none-linux-gnu cross-compiler
+CROSS_COMPILE := aarch64-none-linux-gnu-
 
-CFLAGS ?= -Wall -Wextra -g
+CC := $(CROSS_COMPILE)gcc
 
-LDFLAGS ?= -lpthread -lrt
+CFLAGS := -Wall -Wextra -g
 
-TARGET ?= aesdsocket
-SRCS = aesdsocket.c
-OBJS = $(SRCS:.c=.o)
+LDFLAGS := -lpthread -lrt
+
+TARGET := aesdsocket
+SRCS := aesdsocket.c
+OBJS := $(SRCS:.c=.o)
 
 .PHONY: all
 all: $(TARGET)
