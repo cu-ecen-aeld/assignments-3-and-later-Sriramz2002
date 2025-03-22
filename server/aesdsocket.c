@@ -6,6 +6,11 @@
 #include <errno.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+
+
+
+
+
 #include <netinet/in.h>
 #include <syslog.h>
 #include <pthread.h>
@@ -58,16 +63,19 @@ static SLIST_HEAD(client_list_head, client_thread) client_list = SLIST_HEAD_INIT
 
 int server_socket_fd = -1;
 
-void signal_handler(int signo) {
+void signal_handler(int signo) 
+{
     (void)signo;
     server_exit_flag = 1;
     close(server_socket_fd);
 }
 
 #if !USE_AESD_CHAR_DEVICE
-void* timestamp_writer(void *arg) {
+void* timestamp_writer(void *arg) 
+{
     (void)arg;
-    while (!server_exit_flag) {
+    while (!server_exit_flag) 
+    {
         sleep(10);
         time_t now = time(NULL);
         struct tm time_info;
