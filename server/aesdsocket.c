@@ -26,6 +26,11 @@
 #else
 #define FILE_PATH "/var/tmp/aesdsocketdata"
 #endif
+#define IOCTL_CMD_STR "AESDCHAR_IOCSEEKTO:"
+
+char *seek_cmd = IOCTL_CMD_STR;
+size_t seek_cmd_len = strlen(seek_cmd);
+
 
 // Global exit flag and file mutex
 static volatile sig_atomic_t server_exit_flag = 0;
@@ -52,6 +57,45 @@ void signal_handler(int signo) {
     (void)signo;
     server_exit_flag = 1;
     close(server_socket_fd);
+}
+if (strncmp(recv_buf, seek_cmd, seek_cmd_len) == 0) 
+{
+    // Detected IOCTL Command
+    unsigned int cmd_idx = 0, cmd_offset = 0;
+    char *x_ptr = recv_buf + seek_cmd_len;
+    char *y_ptr = strchr(x_ptr, ','); // Find comma separator
+
+    if (y_ptr) {
+        *y_ptr = '\0'; // Null terminate X value
+        y_ptr++;       // Move to Y value
+
+        cmd_idx = (unsigned int) strtoul(x_ptr, NULL, 10);
+        cmd_offset = (unsigned int) strtoul(y_ptr, NULL, 10);
+
+        syslog(LOG_INFO, "IOCTL Seek Request: Command=%u Offset=%u", cmd_idx, cmd_offset);
+
+        // Prepare ioctl struct
+        struct aesd_seekto seekto_params;
+        seekto_params.write_cmd = cmd_idx;
+        seekto_params.write_cmd_offset = cmd_offset;
+
+        // Issue ioctl
+        if (ioctl(file_fd, AESDCHAR_IOCSEEKTO, &seekto_params) == -1) {
+            syslog(LOG_ERR, "ioctl AESDCHAR_IOCSEEKTO failed: %s", strerror(errno));
+        }
+
+        // Proceed to read/send, skip writing the command string to driver
+        continue;
+    }
+}
+char read_buf[1024];
+ssize_t read_bytes = 0;
+
+lseek(file_fd, 0, SEEK_CUR); // Ensure position set correctly
+
+while ((read_bytes = read(file_fd, read_buf, sizeof(read_buf))) > 0)
+{
+    send(client_fd, read_buf, read_bytes, 0);
 }
 
 // Timestamp writer thread (disabled for aesdchar)

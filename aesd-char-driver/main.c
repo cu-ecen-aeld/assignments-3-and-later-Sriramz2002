@@ -10,7 +10,8 @@
  * @copyright Copyright (c) 2019
  *
  */
-
+#include <linux/fs.h>
+#include "aesd_ioctl.h"
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/printk.h>
@@ -44,13 +45,97 @@ int aesd_release(struct inode *inode, struct file *filp)
 
 
 
+long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    if (cmd == AESDCHAR_IOCSEEKTO)
+        return aesd_seekto_ioctl(filp, arg);
+    else
+        return -ENOTTY;  // Unknown command
+}
 
 
 
 
 
+loff_t aesd_llseek(struct file *filp, loff_t offset, int whence)
+{
+    struct aesd_dev *dev = filp->private_data;
+    loff_t total_buffer_size = 0;
+    uint8_t idx;
+    struct aesd_buffer_entry *entry;
+    loff_t new_position = 0;
+
+    if (!dev)
+        return -EINVAL;
+
+    if (mutex_lock_interruptible(&dev->aesd_mutex))
+        return -ERESTARTSYS;
+
+    // Calculate total size
+    for (idx = 0; idx < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED; idx++) {
+        if (dev->buffer.entry[idx].buffptr)
+            total_buffer_size += dev->buffer.entry[idx].size;
+    }
+
+    // Use kernel helper
+    new_position = fixed_size_llseek(filp, offset, whence, total_buffer_size);
+
+    mutex_unlock(&dev->aesd_mutex);
+
+    return new_position;
+}
 
 
+
+static long aesd_seekto_ioctl(struct file *filp, unsigned long arg)
+{
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_seekto seek_params;
+    size_t cumulative_offset = 0;
+    uint8_t buffer_idx;
+    int i;
+
+    if (!dev)
+        return -EINVAL;
+
+    if (copy_from_user(&seek_params, (struct aesd_seekto __user *)arg, sizeof(seek_params)))
+        return -EFAULT;
+
+    if (mutex_lock_interruptible(&dev->aesd_mutex))
+        return -ERESTARTSYS;
+
+    // Validate: count valid entries
+    size_t valid_entries = 0;
+    for (buffer_idx = 0; buffer_idx < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED; buffer_idx++) {
+        if (dev->buffer.entry[buffer_idx].buffptr)
+            valid_entries++;
+    }
+
+    if (seek_params.write_cmd >= valid_entries) {
+        mutex_unlock(&dev->aesd_mutex);
+        return -EINVAL;
+    }
+
+    // Calculate cumulative offset up to desired command
+    buffer_idx = dev->buffer.out_offs;
+    for (i = 0; i < seek_params.write_cmd; i++) {
+        cumulative_offset += dev->buffer.entry[buffer_idx].size;
+        buffer_idx = (buffer_idx + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    }
+
+    // Validate offset inside the command
+    if (seek_params.write_cmd_offset >= dev->buffer.entry[buffer_idx].size) {
+        mutex_unlock(&dev->aesd_mutex);
+        return -EINVAL;
+    }
+
+    // Set file position
+    filp->f_pos = cumulative_offset + seek_params.write_cmd_offset;
+
+    mutex_unlock(&dev->aesd_mutex);
+
+    return 0;
+}
 
 
 
@@ -186,6 +271,8 @@ struct file_operations aesd_fops = {
     .write =    aesd_write,
     .open =     aesd_open,
     .release =  aesd_release,
+    .llseek = aesd_llseek,
+    .unlocked_ioctl = aesd_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
