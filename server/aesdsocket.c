@@ -67,10 +67,18 @@ void *get_client_addr(struct sockaddr *sa);
 // Signal handler function
 void handle_signals(int signo) {
     (void)signo; // Suppress unused parameter warning
+    syslog(LOG_INFO, "Caught signal, exiting");
     exit_requested = 1;
     // Closing the server socket will cause accept() to return with an error
     if (server_fd >= 0) {
         close(server_fd);
+    }
+    
+    // For foreground processes, exit immediately on second SIGINT
+    static int sigint_count = 0;
+    if (signo == SIGINT && ++sigint_count >= 2) {
+        syslog(LOG_INFO, "Forced exit on second SIGINT");
+        exit(EXIT_SUCCESS);
     }
 }
 
@@ -378,7 +386,7 @@ int main(int argc, char *argv[]) {
     // Initialize syslog
     openlog("aesdsocket", LOG_PID, LOG_USER);
     
-    // Set up signal handlers
+    // Set up signal handlers first before anything else
     setup_signal_handlers();
     
     // Initialize server socket
@@ -408,10 +416,20 @@ int main(int argc, char *argv[]) {
         
         int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
         
-        if (exit_requested) break;
+        if (exit_requested) {
+            if (client_fd >= 0) {
+                close(client_fd);
+            }
+            break;
+        }
         
         if (client_fd < 0) {
-            if (errno != EINTR) {
+            if (errno == EINTR) {
+                // Signal interruption - check if we need to exit
+                if (exit_requested) {
+                    break;
+                }
+            } else {
                 syslog(LOG_ERR, "Accept failed: %s", strerror(errno));
             }
             continue;
@@ -454,5 +472,11 @@ int main(int argc, char *argv[]) {
     cleanup_resources();
     
     closelog();
+    
+    // Print a newline to restore terminal prompt positioning
+    if (!daemon_mode) {
+        write(STDOUT_FILENO, "\n", 1);
+    }
+    
     return EXIT_SUCCESS;
 }
